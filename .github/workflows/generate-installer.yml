@@ -10,8 +10,6 @@ on:
         required: false
         options:
           # START_MACOS_OPTIONS
-          # This section is automatically updated by update-options.yml.
-          # Do not edit manually.
           - Tahoe v26.1
           - Tahoe v26.0.1
           - Tahoe v26.0
