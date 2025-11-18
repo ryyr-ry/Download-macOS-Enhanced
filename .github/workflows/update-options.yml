@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Use the Personal Access Token to allow pushing changes to the workflow file.
           token: ${{ secrets.AUTO_COMMIT_TOKEN }}
