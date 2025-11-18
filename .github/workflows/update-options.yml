@@ -1,0 +1,63 @@
+# Workflow to automatically update the macOS version choices in the main installer workflow.
+name: Update macOS Installer Options
+
+on:
+  # Runs on a schedule (e.g., daily at 3:00 UTC). Commented out.
+  # schedule:
+  #   - cron: "0 3 * * *"
+  # Allows this workflow to be run manually from the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  update-list:
+    runs-on: macos-latest
+    # This job will only run if triggered by the repository owner in the correct repository.
+    if: github.repository == format('{0}/{1}', vars.REPO_OWNER, vars.REPO_NAME) && github.actor == vars.REPO_OWNER
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Use the Personal Access Token to allow pushing changes to the workflow file.
+          token: ${{ secrets.AUTO_COMMIT_TOKEN }}
+
+      - name: Fetch and Save macOS List
+        run: |
+          echo "Fetching available macOS versions from Apple's servers..."
+          INSTALLER_LIST=$(softwareupdate --list-full-installers | \
+            sed -n 's/^\* Title: macOS \([^,]*\),.*Version: \([^,]*\),.*$/          - \1 v\2/p')
+          
+          # Validate the fetched list to prevent writing empty or malformed data.
+          LINE_COUNT=$(echo "$INSTALLER_LIST" | awk 'NF > 0 {count++} END {print count}')
+          if [[ "$LINE_COUNT" -lt 3 ]]; then
+            echo "::error::Fetched list is too short ($LINE_COUNT lines). Aborting update."
+            exit 1
+          fi
+          
+          # Write the list to a temporary file for robust data transfer between steps.
+          echo "$INSTALLER_LIST" > new_options.txt
+          echo "Formatted list successfully generated and saved to new_options.txt:"
+          cat new_options.txt
+
+      - name: Update workflow file with new options
+        run: |
+          WORKFLOW_FILE=".github/workflows/generate-installer.yml"
+          # Use sed to replace the content between the markers with the content of the temporary file.
+          sed -i.bak -e '/# START_MACOS_OPTIONS/r new_options.txt' -e '/# START_MACOS_OPTIONS/,/# END_MACOS_OPTIONS/{//!d;}' "$WORKFLOW_FILE"
+          echo "${WORKFLOW_FILE} has been updated."
+
+      - name: Commit and push changes
+        run: |
+          # Use standard git commands for transparency and control over the commit process.
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Exit early if there are no changes to commit.
+          if git diff --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+          
+          git add .github/workflows/generate-installer.yml
+          git commit -m "chore(ci): Update macOS installer options"
+          git push

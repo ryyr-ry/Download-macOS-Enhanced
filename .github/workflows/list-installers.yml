@@ -1,0 +1,22 @@
+# Workflow to list currently available macOS releases from Apple's servers.
+name: List Available macOS Releases
+
+on:
+  # Allows this workflow to be run manually from the Actions tab.
+  workflow_dispatch:
+
+jobs:
+  list-installers:
+    runs-on: macos-latest
+    # This job will only run if triggered by the repository owner in the correct repository.
+    if: github.repository == format('{0}/{1}', vars.REPO_OWNER, vars.REPO_NAME) && github.actor == vars.REPO_OWNER
+
+    steps:
+      # Fetches and displays the list of available full installers in the workflow log.
+      - name: List Available Full Installers
+        run: |
+          echo "Fetching list of available macOS full installers..."
+          echo "----------------------------------------------------"
+          softwareupdate --list-full-installers
+          echo "----------------------------------------------------"
+          echo "Use the version numbers from the list above in the 'Generate macOS Installer' workflow."

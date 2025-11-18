@@ -1,0 +1,160 @@
+# Workflow to generate a macOS installer and upload it as a workflow artifact.
+name: Generate macOS Installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      macos_version_choice:
+        type: choice
+        description: "macOS Version (from list)"
+        required: false
+        options:
+          # START_MACOS_OPTIONS
+          # This section is automatically updated by update-options.yml.
+          # Do not edit manually.
+          - Tahoe v26.1
+          - Tahoe v26.0.1
+          - Tahoe v26.0
+          - Sequoia v15.7.2
+          - Sequoia v15.7.1
+          - Sequoia v15.7
+          - Sequoia v15.6.1
+          - Sequoia v15.6
+          - Sequoia v15.5
+          - Sequoia v15.4.1
+          - Sequoia v15.4
+          - Sequoia v15.3.2
+          - Sequoia v15.3.1
+          - Sonoma v14.8.2
+          - Sonoma v14.8.1
+          - Sonoma v14.8
+          - Sonoma v14.7.8
+          - Sonoma v14.7.7
+          - Sonoma v14.7.6
+          - Sonoma v14.7.5
+          - Sonoma v14.7.4
+          - Ventura v13.7.8
+          - Ventura v13.7.7
+          - Ventura v13.7.6
+          - Ventura v13.7.5
+          - Ventura v13.7.4
+          - Monterey v12.7.4
+          # END_MACOS_OPTIONS
+      macos_version_manual:
+        type: string
+        description: "Or enter version manually (e.g., 14.5). Overrides list selection."
+        required: false
+      file_type:
+        type: choice
+        description: "File Type"
+        required: true
+        options: [ISO, DMG, ZIP]
+
+run-name: Generate macOS Installer for ${{ github.event.inputs.macos_version_manual || github.event.inputs.macos_version_choice }}
+
+jobs:
+  # This single job is responsible for the entire process from download to artifact upload.
+  build:
+    runs-on: macos-latest
+    # This job will only run if triggered by the repository owner in the correct repository.
+    if: github.repository == format('{0}/{1}', vars.REPO_OWNER, vars.REPO_NAME) && github.actor == vars.REPO_OWNER
+    
+    # Grant read-only permissions as this workflow only reads from the repo and creates artifacts.
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Determine macOS Version
+        id: determine_version
+        run: |
+          # Prioritize manual input over dropdown selection.
+          if [[ -n "${{ github.event.inputs.macos_version_manual }}" ]]; then
+            if ! [[ "${{ github.event.inputs.macos_version_manual }}" =~ ^[0-9]{2}(\.[0-9]{1,2}){1,2}$ ]]; then echo "::error::Invalid manual version format."; exit 1; fi
+            VERSION="${{ github.event.inputs.macos_version_manual }}"
+          elif [[ -n "${{ github.event.inputs.macos_version_choice }}" ]]; then
+            # Extract the version number (e.g., "14.5") from the choice string (e.g., "Sonoma v14.5").
+            VERSION=$(echo "${{ github.event.inputs.macos_version_choice }}" | grep -o '[0-9].*')
+          else
+            echo "::error::No macOS version was specified."; exit 1
+          fi
+          # Set the version as an output for subsequent steps.
+          echo "INSTALLER_VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Download Installer and Detect Name
+        id: detect_name
+        run: |
+          # Use the official `softwareupdate` tool to fetch the full installer.
+          softwareupdate --fetch-full-installer --full-installer-version ${{ steps.determine_version.outputs.INSTALLER_VERSION }}
+          # Dynamically find the downloaded .app file to determine the macOS code name.
+          APP_PATH=$(find /Applications -name "Install macOS *.app" -maxdepth 1 -print -quit)
+          if [[ -z "$APP_PATH" ]]; then echo "::error::Installer application not found after download."; exit 1; fi
+          # Extract the code name (e.g., "Sonoma") from the full path.
+          DETECTED_NAME=$(basename "$APP_PATH" | sed -e 's/Install macOS //' -e 's/\.app//')
+          echo "INSTALLER_NAME=$DETECTED_NAME" >> $GITHUB_OUTPUT
+
+      - name: Create Installer Base (for DMG/ISO)
+        if: github.event.inputs.file_type == 'DMG' || github.event.inputs.file_type == 'ISO'
+        run: |
+          # Create a blank disk image to serve as the target for the bootable installer.
+          sudo hdiutil create -o /tmp/"${{ steps.detect_name.outputs.INSTALLER_NAME }}" -size 20g -volname "${{ steps.detect_name.outputs.INSTALLER_NAME }}" -layout SPUD -fs HFS+J
+          sudo hdiutil attach /tmp/"${{ steps.detect_name.outputs.INSTALLER_NAME }}".dmg -noverify -mountpoint /Volumes/"${{ steps.detect_name.outputs.INSTALLER_NAME }}"
+          # Use the official `createinstallmedia` tool to make the disk image bootable.
+          sudo "/Applications/Install macOS ${{ steps.detect_name.outputs.INSTALLER_NAME }}.app/Contents/Resources/createinstallmedia" --volume /Volumes/"${{ steps.detect_name.outputs.INSTALLER_NAME }}" --nointeraction
+
+      - name: Finalize macOS DMG Installer
+        if: github.event.inputs.file_type == 'DMG'
+        run: |
+          hdiutil eject -force "/Volumes/Install macOS ${{ steps.detect_name.outputs.INSTALLER_NAME }}"
+          sudo mv /tmp/"${{ steps.detect_name.outputs.INSTALLER_NAME }}".dmg ~/Desktop/"${{ steps.detect_name.outputs.INSTALLER_NAME }}.DMG"
+
+      - name: Finalize macOS ISO Installer
+        if: github.event.inputs.file_type == 'ISO'
+        run: |
+          # Use a retry loop to robustly eject the volume, avoiding issues with `sleep`.
+          for i in {1..10}; do
+            if hdiutil eject -force "/Volumes/Install macOS ${{ steps.detect_name.outputs.INSTALLER_NAME }}"; then
+              # Convert the DMG to a CDR image (which is ISO-compatible).
+              hdiutil convert /tmp/"${{ steps.detect_name.outputs.INSTALLER_NAME }}".dmg -format UDTO -o ~/Desktop/"${{ steps.detect_name.outputs.INSTALLER_NAME }}"
+              # Rename the .cdr file to .iso for better compatibility.
+              mv -v ~/Desktop/"${{ steps.detect_name.outputs.INSTALLER_NAME }}".cdr ~/Desktop/"${{ steps.detect_name.outputs.INSTALLER_NAME }}.ISO"
+              exit 0
+            fi; sleep 15; done; exit 1
+            
+      - name: Generate macOS ZIP Installer
+        if: github.event.inputs.file_type == 'ZIP'
+        run: |
+          cd /Applications
+          zip -r ~/Desktop/"${{ steps.detect_name.outputs.INSTALLER_NAME }}.ZIP" "Install macOS ${{ steps.detect_name.outputs.INSTALLER_NAME }}.app"
+
+      - name: Standardize Final Filename
+        id: prepare_upload
+        run: |
+          # Use the highly compatible `tr` command to convert file extension to lowercase, avoiding shell-specific syntax issues.
+          FILE_TYPE_INPUT="${{ github.event.inputs.file_type }}"
+          LOWER_EXT=$(echo "$FILE_TYPE_INPUT" | tr '[:upper:]' '[:lower:]')
+          
+          # Ensure the final filename has a consistent, lowercase extension.
+          ORIGINAL_FILENAME="${{ steps.detect_name.outputs.INSTALLER_NAME }}.${FILE_TYPE_INPUT}"
+          FINAL_FILENAME="${{ steps.detect_name.outputs.INSTALLER_NAME }}.$LOWER_EXT"
+          mv ~/Desktop/"$ORIGINAL_FILENAME" ~/Desktop/"$FINAL_FILENAME"
+
+          echo "INSTALLER_FILENAME=$FINAL_FILENAME" >> $GITHUB_OUTPUT
+
+      # The final step is to upload the generated installer as a workflow artifact.
+      - name: Upload Installer Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Create a descriptive name for the artifact.
+          name: macOS-${{ steps.detect_name.outputs.INSTALLER_NAME }}-${{ steps.determine_version.outputs.INSTALLER_VERSION }}
+          path: ~/Desktop/${{ steps.prepare_upload.outputs.INSTALLER_FILENAME }}
+          # Set a reasonable retention period for the artifact.
+          retention-days: 7
+
+      # This step will always run to clean up temporary files, regardless of job success or failure.
+      - name: Clean up temporary files
+        if: always()
+        run: |
+          sudo rm -fv /tmp/"${{ steps.detect_name.outputs.INSTALLER_NAME }}".dmg

@@ -1,0 +1,11 @@
+# Dependabot settings file
+version: 2
+updates:
+  # Keep GitHub Actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/" # Look for workflow files in the root directory
+    schedule:
+      interval: "weekly" # Check for updates weekly
+    commit-message:
+      prefix: "chore" # Prefix for commit messages
+      include: "scope"
