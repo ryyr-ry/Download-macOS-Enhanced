@@ -143,7 +143,7 @@ jobs:
 
       # The final step is to upload the generated installer as a workflow artifact.
       - name: Upload Installer Artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           # Create a descriptive name for the artifact.
           name: macOS-${{ steps.detect_name.outputs.INSTALLER_NAME }}-${{ steps.determine_version.outputs.INSTALLER_VERSION }}
